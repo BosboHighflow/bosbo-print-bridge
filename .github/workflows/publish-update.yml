@@ -1,0 +1,47 @@
+name: Publish BOSBO Print Bridge update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'release/v*/bridge.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate and package V0.8.2
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json, re, zipfile
+          version = "0.8.2"
+          src = Path("release/v" + version + "/bridge.py")
+          body = src.read_bytes()
+          text = body.decode("utf-8")
+          assert re.search(r"^VERSION=['\"]" + re.escape(version) + r"['\"]$", text, re.M), "version mismatch"
+          compile(text, str(src), "exec")
+          manifest = {
+              "product": "BOSBO_PRINT_BRIDGE",
+              "version": version,
+              "files": {"app/bridge.py": hashlib.sha256(body).hexdigest()},
+          }
+          output = Path("BOSBO_Print_Bridge_GUNCELLEME_V" + version + ".zip")
+          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as z:
+              z.writestr("manifest.json", json.dumps(manifest, indent=2))
+              z.writestr("app/bridge.py", body)
+          with zipfile.ZipFile(output) as z:
+              assert set(z.namelist()) == {"manifest.json", "app/bridge.py"}
+              assert hashlib.sha256(z.read("app/bridge.py")).hexdigest() == manifest["files"]["app/bridge.py"]
+          print("Validated", output)
+          PY
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.8.2 BOSBO_Print_Bridge_GUNCELLEME_V0.8.2.zip --repo "$GITHUB_REPOSITORY" --title "BOSBO Print Bridge V0.8.2" --notes "First online update test. Fixes application version display. Real printing remains disabled." --latest
