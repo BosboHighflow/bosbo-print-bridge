@@ -1,47 +1,59 @@
 name: Publish BOSBO Print Bridge update
-
 on:
   push:
     branches: [main]
     paths:
       - 'release/v*/bridge.py'
   workflow_dispatch:
-
 permissions:
   contents: write
-
+concurrency:
+  group: bosbo-release
+  cancel-in-progress: false
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate and package V0.8.2
+      - name: Validate and package latest release
+        id: package
+        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import hashlib, json, re, zipfile
-          version = "0.8.2"
-          src = Path("release/v" + version + "/bridge.py")
-          body = src.read_bytes()
-          text = body.decode("utf-8")
-          assert re.search(r"^VERSION=['\"]" + re.escape(version) + r"['\"]$", text, re.M), "version mismatch"
-          compile(text, str(src), "exec")
-          manifest = {
-              "product": "BOSBO_PRINT_BRIDGE",
-              "version": version,
-              "files": {"app/bridge.py": hashlib.sha256(body).hexdigest()},
-          }
-          output = Path("BOSBO_Print_Bridge_GUNCELLEME_V" + version + ".zip")
-          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as z:
-              z.writestr("manifest.json", json.dumps(manifest, indent=2))
-              z.writestr("app/bridge.py", body)
-          with zipfile.ZipFile(output) as z:
-              assert set(z.namelist()) == {"manifest.json", "app/bridge.py"}
-              assert hashlib.sha256(z.read("app/bridge.py")).hexdigest() == manifest["files"]["app/bridge.py"]
-          print("Validated", output)
+          import hashlib, json, re, zipfile, os
+          versions=[]
+          for item in Path('release').glob('v*/bridge.py'):
+              m=re.fullmatch(r'v(\d+\.\d+\.\d+)', item.parent.name)
+              if m: versions.append((tuple(map(int,m.group(1).split('.'))),m.group(1),item))
+          if not versions: raise RuntimeError('No release source present')
+          _, version, src=max(versions)
+          body=src.read_bytes()
+          content=body.decode('utf-8')
+          if not re.search(r"^VERSION=['\"]" + re.escape(version) + r"['\"]$",content,re.M):
+              raise RuntimeError('VERSION mismatch: '+version)
+          compile(content, str(src), 'exec')
+          manifest={'product':'BOSBO_PRINT_BRIDGE','version':version,'files':{'app/bridge.py':hashlib.sha256(body).hexdigest()}}
+          name=f'BOSBO_Print_Bridge_GUNCELLEME_V{version}.zip'
+          with zipfile.ZipFile(name,'w',compression=zipfile.ZIP_DEFLATED) as z:
+              z.writestr('manifest.json',json.dumps(manifest,indent=2))
+              z.writestr('app/bridge.py',body)
+          with zipfile.ZipFile(name) as z:
+              assert set(z.namelist())=={'manifest.json','app/bridge.py'}
+              assert hashlib.sha256(z.read('app/bridge.py')).hexdigest()==manifest['files']['app/bridge.py']
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f'version={version}\nfilename={name}\n')
+          print('Validated',name)
           PY
-      - name: Publish GitHub Release
+      - name: Publish release if tag does not exist
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.package.outputs.version }}
+          FILENAME: ${{ steps.package.outputs.filename }}
+        shell: bash
         run: |
-          gh release create v0.8.2 BOSBO_Print_Bridge_GUNCELLEME_V0.8.2.zip --repo "$GITHUB_REPOSITORY" --title "BOSBO Print Bridge V0.8.2" --notes "First online update test. Fixes application version display. Real printing remains disabled." --latest
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists; not replacing published artifacts"
+            exit 0
+          fi
+          gh release create "v$VERSION" "$FILENAME" --repo "$GITHUB_REPOSITORY" --title "BOSBO Print Bridge V$VERSION" --notes "Simulated printing only. Includes Windows client improvements. Real printing remains disabled." --latest
